@@ -25,7 +25,13 @@ const DEFAULT_CONFIG: SystemConfig = {
   // The backend endpoint for Google Apps Script calls.  This default was set
   // via ChatGPT based on user instruction to avoid needing to paste it in the
   // settings page manually.  See https://script.google.com for more information.
-  scriptUrl: 'https://script.google.com/macros/s/AKfycbyMxIHg_KG_tBobkonmp9aXbeXciCot1A_9qNndQsotzPnAwmlKI59Py549deH6Z5_f/exec',
+  // Updated default backend endpoint for Google Apps Script.  This URL was
+  // provided by the user during deployment and points to the active Apps
+  // Script web app.  Having this value pre-populated means the app can
+  // communicate with the backend out of the box without requiring the user
+  // to paste the URL manually via the System Admin settings page.  If you
+  // need to change it later, simply update the configuration in System Admin.
+  scriptUrl: 'https://script.google.com/macros/s/AKfycbxVRoUYpinuItY8kKLa-jAiXmybVwM9JlefXK5jwA2YrsPlwKkznPPIPSacasOUYH1x/exec',
   sheetId: '1ge8sumS3qX7lsw29cIoBQrsW5vNYI5yfr_BPveAiLmc',
   driveId: '142UYdJGFhP3TtJ_fSJA2WUW3E8iHTIWW'
 };
