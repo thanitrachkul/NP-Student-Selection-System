@@ -16,8 +16,16 @@ const DEFAULT_ADMIN: AdminUser = {
   role: 'SUPER_ADMIN'
 };
 
+// Set the default configuration values for the app.  In particular, the
+// scriptUrl field is populated with the Google Apps Script URL provided by the user.
+// This ensures the app has a working backend endpoint as soon as it starts up
+// without requiring a manual paste in the UI.  If you need to override these values
+// later via the System Admin settings, you still can.
 const DEFAULT_CONFIG: SystemConfig = {
-  scriptUrl: '',
+  // The backend endpoint for Google Apps Script calls.  This default was set
+  // via ChatGPT based on user instruction to avoid needing to paste it in the
+  // settings page manually.  See https://script.google.com for more information.
+  scriptUrl: 'https://script.google.com/macros/s/AKfycbyMxIHg_KG_tBobkonmp9aXbeXciCot1A_9qNndQsotzPnAwmlKI59Py549deH6Z5_f/exec',
   sheetId: '1ge8sumS3qX7lsw29cIoBQrsW5vNYI5yfr_BPveAiLmc',
   driveId: '142UYdJGFhP3TtJ_fSJA2WUW3E8iHTIWW'
 };
