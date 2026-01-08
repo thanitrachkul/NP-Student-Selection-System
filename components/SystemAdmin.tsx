@@ -4,7 +4,7 @@ import { AdminUser, SystemConfig, ActivityLog } from '../types';
 import { storage } from '../services/storage';
 import api from '../services/api';
 import Button from './Button';
-import { Users, Save, Plus, Copy, Check, Server, Shield, Database, X, AlertCircle, Wrench, Activity, Clock, Lock, Pencil, Trash2, AlertTriangle } from 'lucide-react';
+import { Users, Save, Plus, Copy, Check, Server, Shield, Database, X, AlertCircle, Wrench, Activity, Clock, Lock, Pencil, Trash2, AlertTriangle, Loader2, Link } from 'lucide-react';
 
 interface SystemAdminProps {
   onBack: () => void;
@@ -17,6 +17,10 @@ const SystemAdmin: React.FC<SystemAdminProps> = ({ onBack, currentUser }) => {
   const [logs, setLogs] = useState<ActivityLog[]>([]);
   const [config, setConfig] = useState<SystemConfig>({ scriptUrl: '', sheetId: '', driveId: '' });
   
+  // Loading States
+  const [isLoadingData, setIsLoadingData] = useState(false);
+  const [isProcessingUser, setIsProcessingUser] = useState(false);
+
   // User Modal State
   const [showUserModal, setShowUserModal] = useState(false);
   const [editingUser, setEditingUser] = useState<Partial<AdminUser>>({});
@@ -31,20 +35,40 @@ const SystemAdmin: React.FC<SystemAdminProps> = ({ onBack, currentUser }) => {
   const [isSettingUp, setIsSettingUp] = useState(false);
 
   const isSuperAdmin = currentUser?.role === 'SUPER_ADMIN';
+  const isConnected = config.scriptUrl && config.scriptUrl.includes('script.google.com');
 
   useEffect(() => {
-    loadData();
-  }, []);
-
-  const loadData = () => {
-    setUsers(storage.getUsers());
-    setConfig(storage.getConfig());
-    setLogs(storage.getLogs());
-    
+    loadLocalData();
     // Auto switch to CONFIG tab if URL is missing AND user is Super Admin
     const currentConfig = storage.getConfig();
     if (!currentConfig.scriptUrl && isSuperAdmin) {
         setActiveTab('CONFIG');
+    } else {
+        // If config exists, load users. If not, we will show the empty state in render.
+        if (currentConfig.scriptUrl) {
+            loadRemoteUsers();
+        }
+    }
+  }, []);
+
+  const loadLocalData = () => {
+    setConfig(storage.getConfig());
+    setLogs(storage.getLogs());
+  };
+
+  const loadRemoteUsers = async () => {
+    // We check connection here again to be safe, but UI should prevent calling this if not connected
+    const currentConfig = storage.getConfig();
+    if (!currentConfig.scriptUrl || !currentConfig.scriptUrl.includes('script.google.com')) return;
+
+    setIsLoadingData(true);
+    try {
+        const remoteUsers = await api.getUsers();
+        setUsers(remoteUsers);
+    } catch (e) {
+        console.error("Failed to load users", e);
+    } finally {
+        setIsLoadingData(false);
     }
   };
 
@@ -58,6 +82,7 @@ const SystemAdmin: React.FC<SystemAdminProps> = ({ onBack, currentUser }) => {
     storage.saveConfig(config);
     storage.addLog(currentUser, 'UPDATE_CONFIG', 'Updated system configuration');
     alert('บันทึกการตั้งค่าเรียบร้อยแล้ว');
+    loadRemoteUsers(); // Try reloading users with new config
   };
 
   const handleSetupDatabase = async () => {
@@ -75,6 +100,7 @@ const SystemAdmin: React.FC<SystemAdminProps> = ({ onBack, currentUser }) => {
         await api.setupDatabase();
         storage.addLog(currentUser, 'SETUP_DB', 'Initialized database tables');
         alert('ติดตั้งฐานข้อมูลเรียบร้อยแล้ว (Sheets Created)');
+        loadRemoteUsers();
     } catch (e: any) {
         alert('เกิดข้อผิดพลาดในการติดตั้ง: ' + e.message);
     } finally {
@@ -83,7 +109,6 @@ const SystemAdmin: React.FC<SystemAdminProps> = ({ onBack, currentUser }) => {
   };
 
   const handleAddUserClick = () => {
-    // Default to STAFF for convenience
     setEditingUser({ role: 'STAFF' });
     setIsPasswordChanged(true);
     setFormError(null);
@@ -91,8 +116,8 @@ const SystemAdmin: React.FC<SystemAdminProps> = ({ onBack, currentUser }) => {
   };
 
   const handleEditUserClick = (user: AdminUser) => {
-    setEditingUser({ ...user }); // Clone
-    setIsPasswordChanged(false); // Default to not changing password
+    setEditingUser({ ...user }); 
+    setIsPasswordChanged(false); 
     setFormError(null);
     setShowUserModal(true);
   };
@@ -101,19 +126,22 @@ const SystemAdmin: React.FC<SystemAdminProps> = ({ onBack, currentUser }) => {
     setDeletingUser(user);
   };
 
-  const handleConfirmDelete = () => {
+  const handleConfirmDelete = async () => {
     if (!deletingUser) return;
+    setIsProcessingUser(true);
     try {
-        storage.deleteUser(deletingUser.id);
+        await api.deleteUser(deletingUser.id);
         storage.addLog(currentUser, 'DELETE_USER', `Deleted user ID: ${deletingUser.id}`);
-        loadData(); // Reload UI immediately
         setDeletingUser(null);
+        await loadRemoteUsers();
     } catch (e: any) {
-        alert(e.message);
+        alert('ลบผู้ใช้ไม่สำเร็จ: ' + e.message);
+    } finally {
+        setIsProcessingUser(false);
     }
   };
 
-  const handleUserModalSubmit = (e: React.FormEvent) => {
+  const handleUserModalSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setFormError(null);
 
@@ -128,15 +156,18 @@ const SystemAdmin: React.FC<SystemAdminProps> = ({ onBack, currentUser }) => {
         return;
     }
 
+    setIsProcessingUser(true);
     try {
         if (editingUser.id) {
             // Update
             const updated = { ...editingUser } as AdminUser;
             if (!isPasswordChanged) {
+                // If password not changed, find old one or send as is (backend should handle if blank/masked, 
+                // but here we rely on what we fetched)
                 const old = users.find(u => u.id === editingUser.id);
                 if (old) updated.password = old.password;
             }
-            storage.updateUser(updated);
+            await api.saveUser(updated);
             storage.addLog(currentUser, 'UPDATE_USER', `Updated user: ${updated.username} (${updated.role})`);
         } else {
             // Create
@@ -147,17 +178,17 @@ const SystemAdmin: React.FC<SystemAdminProps> = ({ onBack, currentUser }) => {
                 name: editingUser.name!,
                 role: editingUser.role || 'STAFF'
             };
-            storage.addUser(newUser);
+            await api.saveUser(newUser);
             storage.addLog(currentUser, 'CREATE_USER', `Created user: ${newUser.username} (${newUser.role})`);
         }
         setShowUserModal(false);
-        loadData();
+        await loadRemoteUsers();
     } catch (e: any) {
-        setFormError(e.message); // Show error in modal
+        setFormError('บันทึกไม่สำเร็จ: ' + e.message);
+    } finally {
+        setIsProcessingUser(false);
     }
   };
-
-  const isConnected = config.scriptUrl && config.scriptUrl.includes('script.google.com');
 
   return (
     <div className="min-h-screen bg-[#F5F5F7] font-sans flex flex-col">
@@ -225,97 +256,133 @@ const SystemAdmin: React.FC<SystemAdminProps> = ({ onBack, currentUser }) => {
                 {/* --- TAB: USERS --- */}
                 {activeTab === 'USERS' && (
                     <div className="space-y-6 animate-fade-in">
-                        <div className="flex justify-between items-center">
-                            <div>
-                                <h2 className="text-2xl font-bold text-gray-900">จัดการเจ้าหน้าที่</h2>
-                                <p className="text-sm text-gray-500">เพิ่ม ลบ แก้ไข ผู้ที่มีสิทธิ์เข้าถึงระบบ</p>
+                        
+                        {/* 1. If Not Connected: Show Empty State / Guide */}
+                        {!isConnected ? (
+                             <div className="flex flex-col items-center justify-center py-20 bg-white rounded-2xl shadow-sm border border-gray-200 text-center px-4 animate-in fade-in zoom-in-95">
+                                  <div className="w-20 h-20 bg-yellow-50 rounded-full flex items-center justify-center mb-6 shadow-inner">
+                                      <Server className="w-10 h-10 text-yellow-600" />
+                                  </div>
+                                  <h3 className="text-2xl font-bold text-gray-900 mb-3">ยังไม่ได้เชื่อมต่อระบบ</h3>
+                                  <p className="text-gray-500 mb-8 max-w-md text-sm leading-relaxed">
+                                      คุณจำเป็นต้องตั้งค่า <strong>Web App URL</strong> เพื่อเชื่อมต่อกับ Google Sheets 
+                                      ก่อนเริ่มใช้งานระบบจัดการเจ้าหน้าที่และฐานข้อมูล
+                                  </p>
+                                  <div className="flex gap-3">
+                                      <Button onClick={() => setActiveTab('CONFIG')} className="shadow-lg shadow-yellow-200 bg-yellow-500 hover:bg-yellow-600 border-none text-white">
+                                          <Wrench className="w-4 h-4 mr-2" /> ไปที่หน้าตั้งค่า Backend
+                                      </Button>
+                                  </div>
+                             </div>
+                        ) : (
+                            // 2. If Connected: Show User Table
+                            <>
+                            <div className="flex justify-between items-center">
+                                <div>
+                                    <h2 className="text-2xl font-bold text-gray-900">จัดการเจ้าหน้าที่</h2>
+                                    <p className="text-sm text-gray-500">เพิ่ม ลบ แก้ไข ผู้ที่มีสิทธิ์เข้าถึงระบบ</p>
+                                </div>
+                                <Button onClick={handleAddUserClick} disabled={isLoadingData}>
+                                    <Plus className="w-5 h-5 mr-2" /> เพิ่มผู้ใช้งาน
+                                </Button>
                             </div>
-                            <Button onClick={handleAddUserClick}>
-                                <Plus className="w-5 h-5 mr-2" /> เพิ่มผู้ใช้งาน
-                            </Button>
-                        </div>
 
-                        <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
-                            <table className="min-w-full divide-y divide-gray-100">
-                                <thead className="bg-gray-50">
-                                    <tr>
-                                        <th className="px-6 py-4 text-left text-xs font-bold text-gray-500 uppercase">ชื่อ - สกุล</th>
-                                        <th className="px-6 py-4 text-left text-xs font-bold text-gray-500 uppercase">Username</th>
-                                        <th className="px-6 py-4 text-left text-xs font-bold text-gray-500 uppercase">รหัสผ่าน</th>
-                                        <th className="px-6 py-4 text-left text-xs font-bold text-gray-500 uppercase">ระดับสิทธิ์</th>
-                                        <th className="px-6 py-4 text-right text-xs font-bold text-gray-500 uppercase">จัดการ</th>
-                                    </tr>
-                                </thead>
-                                <tbody className="divide-y divide-gray-50">
-                                    {users.map(user => {
-                                        const isTargetSuperAdmin = user.role === 'SUPER_ADMIN';
-                                        // Hide credentials if I am NOT super admin, and the target IS super admin
-                                        const hideCredentials = !isSuperAdmin && isTargetSuperAdmin;
-                                        
-                                        // Delete permission logic
-                                        const canEdit = isSuperAdmin || !isTargetSuperAdmin;
-                                        const canDelete = user.id !== 'admin-001' && (isSuperAdmin || !isTargetSuperAdmin);
-
-                                        return (
-                                        <tr key={user.id} className="hover:bg-gray-50">
-                                            <td className="px-6 py-4 whitespace-nowrap">
-                                                <div className="text-sm font-bold text-gray-900">{user.name}</div>
-                                            </td>
-                                            <td className="px-6 py-4 whitespace-nowrap">
-                                                {hideCredentials ? (
-                                                    <span className="text-gray-400 text-xs italic font-medium">(สงวนสิทธิ์)</span>
-                                                ) : (
-                                                    <div className="text-sm text-gray-600 font-mono">{user.username}</div>
-                                                )}
-                                            </td>
-                                            <td className="px-6 py-4 whitespace-nowrap">
-                                                {hideCredentials ? (
-                                                    <div className="flex items-center gap-1 text-gray-300">
-                                                        <Lock className="w-3 h-3" />
-                                                        <span className="text-xs tracking-widest">••••••</span>
-                                                    </div>
-                                                ) : (
-                                                    <div className="text-sm text-gray-600 font-mono tracking-wider">{user.password}</div>
-                                                )}
-                                            </td>
-                                            <td className="px-6 py-4 whitespace-nowrap">
-                                                <span className={`inline-flex px-2.5 py-1 rounded-md text-xs font-bold 
-                                                    ${user.role === 'SUPER_ADMIN' ? 'bg-black text-white' : 
-                                                      user.role === 'ADMIN' ? 'bg-blue-100 text-blue-700' :
-                                                      user.role === 'STAFF' ? 'bg-green-100 text-green-700' :
-                                                      'bg-gray-200 text-gray-600'}`}>
-                                                    {user.role}
-                                                </span>
-                                            </td>
-                                            <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                                                <div className="flex items-center justify-end gap-2">
-                                                    {canEdit && (
-                                                        <button 
-                                                            onClick={() => handleEditUserClick(user)} 
-                                                            className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
-                                                            title="แก้ไข"
-                                                        >
-                                                            <Pencil className="w-4 h-4" />
-                                                        </button>
-                                                    )}
-                                                    
-                                                    {canDelete && (
-                                                        <button 
-                                                            type="button"
-                                                            onClick={() => handleClickDelete(user)} 
-                                                            className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
-                                                            title="ลบ"
-                                                        >
-                                                            <Trash2 className="w-4 h-4" />
-                                                        </button>
-                                                    )}
-                                                </div>
-                                            </td>
+                            <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
+                                {isLoadingData ? (
+                                    <div className="p-10 flex flex-col items-center justify-center text-gray-400">
+                                        <Loader2 className="w-8 h-8 animate-spin mb-2" />
+                                        <span>กำลังโหลดรายชื่อ...</span>
+                                    </div>
+                                ) : (
+                                <table className="min-w-full divide-y divide-gray-100">
+                                    <thead className="bg-gray-50">
+                                        <tr>
+                                            <th className="px-6 py-4 text-left text-xs font-bold text-gray-500 uppercase">ชื่อ - สกุล</th>
+                                            <th className="px-6 py-4 text-left text-xs font-bold text-gray-500 uppercase">Username</th>
+                                            <th className="px-6 py-4 text-left text-xs font-bold text-gray-500 uppercase">รหัสผ่าน</th>
+                                            <th className="px-6 py-4 text-left text-xs font-bold text-gray-500 uppercase">ระดับสิทธิ์</th>
+                                            <th className="px-6 py-4 text-right text-xs font-bold text-gray-500 uppercase">จัดการ</th>
                                         </tr>
-                                    )})}
-                                </tbody>
-                            </table>
-                        </div>
+                                    </thead>
+                                    <tbody className="divide-y divide-gray-50">
+                                        {users.length > 0 ? users.map(user => {
+                                            const isTargetSuperAdmin = user.role === 'SUPER_ADMIN';
+                                            // Hide credentials if I am NOT super admin, and the target IS super admin
+                                            const hideCredentials = !isSuperAdmin && isTargetSuperAdmin;
+                                            
+                                            // Delete permission logic
+                                            const canEdit = isSuperAdmin || !isTargetSuperAdmin;
+                                            const canDelete = user.id !== 'admin-001' && (isSuperAdmin || !isTargetSuperAdmin);
+
+                                            return (
+                                            <tr key={user.id} className="hover:bg-gray-50">
+                                                <td className="px-6 py-4 whitespace-nowrap">
+                                                    <div className="text-sm font-bold text-gray-900">{user.name}</div>
+                                                </td>
+                                                <td className="px-6 py-4 whitespace-nowrap">
+                                                    {hideCredentials ? (
+                                                        <span className="text-gray-400 text-xs italic font-medium">(สงวนสิทธิ์)</span>
+                                                    ) : (
+                                                        <div className="text-sm text-gray-600 font-mono">{user.username}</div>
+                                                    )}
+                                                </td>
+                                                <td className="px-6 py-4 whitespace-nowrap">
+                                                    {hideCredentials ? (
+                                                        <div className="flex items-center gap-1 text-gray-300">
+                                                            <Lock className="w-3 h-3" />
+                                                            <span className="text-xs tracking-widest">••••••</span>
+                                                        </div>
+                                                    ) : (
+                                                        <div className="text-sm text-gray-600 font-mono tracking-wider">{user.password}</div>
+                                                    )}
+                                                </td>
+                                                <td className="px-6 py-4 whitespace-nowrap">
+                                                    <span className={`inline-flex px-2.5 py-1 rounded-md text-xs font-bold 
+                                                        ${user.role === 'SUPER_ADMIN' ? 'bg-black text-white' : 
+                                                        user.role === 'ADMIN' ? 'bg-blue-100 text-blue-700' :
+                                                        user.role === 'STAFF' ? 'bg-green-100 text-green-700' :
+                                                        'bg-gray-200 text-gray-600'}`}>
+                                                        {user.role}
+                                                    </span>
+                                                </td>
+                                                <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                                                    <div className="flex items-center justify-end gap-2">
+                                                        {canEdit && (
+                                                            <button 
+                                                                onClick={() => handleEditUserClick(user)} 
+                                                                className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
+                                                                title="แก้ไข"
+                                                            >
+                                                                <Pencil className="w-4 h-4" />
+                                                            </button>
+                                                        )}
+                                                        
+                                                        {canDelete && (
+                                                            <button 
+                                                                type="button"
+                                                                onClick={() => handleClickDelete(user)} 
+                                                                className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                                                                title="ลบ"
+                                                            >
+                                                                <Trash2 className="w-4 h-4" />
+                                                            </button>
+                                                        )}
+                                                    </div>
+                                                </td>
+                                            </tr>
+                                        )}) : (
+                                            <tr>
+                                                <td colSpan={5} className="text-center py-10 text-gray-400">
+                                                    ยังไม่มีข้อมูลผู้ใช้งาน (หากเพิ่งเริ่มระบบ กดปุ่ม "ติดตั้งฐานข้อมูล" ในหน้าตั้งค่า)
+                                                </td>
+                                            </tr>
+                                        )}
+                                    </tbody>
+                                </table>
+                                )}
+                            </div>
+                            </>
+                        )}
                     </div>
                 )}
                 
@@ -582,7 +649,9 @@ const SystemAdmin: React.FC<SystemAdminProps> = ({ onBack, currentUser }) => {
                         </div>
 
                         <div className="pt-4">
-                            <Button type="submit" className="w-full">บันทึกข้อมูล</Button>
+                            <Button type="submit" className="w-full" disabled={isProcessingUser}>
+                                {isProcessingUser ? <Loader2 className="w-5 h-5 animate-spin mx-auto" /> : 'บันทึกข้อมูล'}
+                            </Button>
                         </div>
                     </form>
                 </div>
@@ -614,9 +683,10 @@ const SystemAdmin: React.FC<SystemAdminProps> = ({ onBack, currentUser }) => {
                       </button>
                       <button 
                         onClick={handleConfirmDelete}
-                        className="flex-1 py-3.5 bg-red-600 hover:bg-red-700 text-white font-bold rounded-xl transition-colors shadow-lg shadow-red-200"
+                        disabled={isProcessingUser}
+                        className="flex-1 py-3.5 bg-red-600 hover:bg-red-700 text-white font-bold rounded-xl transition-colors shadow-lg shadow-red-200 flex items-center justify-center"
                       >
-                        ลบผู้ใช้
+                        {isProcessingUser ? <Loader2 className="w-5 h-5 animate-spin" /> : 'ลบผู้ใช้'}
                       </button>
                   </div>
              </div>

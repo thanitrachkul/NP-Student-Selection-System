@@ -2,17 +2,16 @@
 const SHEETS = {
   CLASSROOMS: 'DB_Classrooms',
   STUDENTS: 'DB_Students',
-  SETTINGS: 'DB_Settings'
+  SETTINGS: 'DB_Settings',
+  USERS: 'DB_Users' // NEW: Users Sheet
 };
 
 // Helper to get the correct spreadsheet
 function getDB(sheetId) {
   try {
-    // If a specific ID is provided (and looks valid), try to open it
     if (sheetId && typeof sheetId === 'string' && sheetId.length > 10) {
       return SpreadsheetApp.openById(sheetId);
     }
-    // Otherwise, fallback to the active spreadsheet (Container-bound)
     return SpreadsheetApp.getActiveSpreadsheet();
   } catch (e) {
     console.error('Error opening spreadsheet by ID, falling back to active:', e);
@@ -23,19 +22,28 @@ function getDB(sheetId) {
 function setup(sheetId) {
   const ss = getDB(sheetId);
   
-  // Create Classrooms Sheet: ID, Data(JSON), UpdatedAt, DeletedAt
+  // Create Classrooms Sheet
   if (!ss.getSheetByName(SHEETS.CLASSROOMS)) {
     ss.insertSheet(SHEETS.CLASSROOMS).appendRow(['id', 'data', 'updated_at', 'deleted_at']);
   }
   
-  // Create Students Sheet: ClassroomID, StudentID, Data(JSON), UpdatedAt
+  // Create Students Sheet
   if (!ss.getSheetByName(SHEETS.STUDENTS)) {
     ss.insertSheet(SHEETS.STUDENTS).appendRow(['classroom_id', 'student_id', 'data', 'updated_at']);
   }
 
-  // Create Settings Sheet: ClassroomID, Type, Data(JSON), UpdatedAt
+  // Create Settings Sheet
   if (!ss.getSheetByName(SHEETS.SETTINGS)) {
     ss.insertSheet(SHEETS.SETTINGS).appendRow(['classroom_id', 'type', 'data', 'updated_at']);
+  }
+
+  // NEW: Create Users Sheet
+  if (!ss.getSheetByName(SHEETS.USERS)) {
+    const sheet = ss.insertSheet(SHEETS.USERS);
+    sheet.appendRow(['id', 'username', 'password', 'name', 'role', 'updated_at']);
+    // Add Default Super Admin
+    const now = new Date().toISOString();
+    sheet.appendRow(['admin-001', 'Admin', '@Np123456', 'ผู้ดูแลระบบหลัก', 'SUPER_ADMIN', now]);
   }
 }
 
@@ -49,14 +57,10 @@ function doPost(e) {
 
 function handleRequest(e) {
   const lock = LockService.getScriptLock();
-  // Wait up to 30 seconds for other processes to finish.
   lock.tryLock(30000);
 
   try {
-    // 1. Determine Action (Prioritize URL param, fallback to body)
     let action = e.parameter.action;
-    
-    // 2. Parse Body Safely
     let body = {};
     if (e.postData && e.postData.contents) {
       try {
@@ -66,13 +70,11 @@ function handleRequest(e) {
       }
     }
     
-    // Fallback if action wasn't in URL
     if (!action && body.action) {
       action = body.action;
     }
 
     const sheetId = body.sheetId || e.parameter.sheetId;
-
     let result = { status: 'error', message: 'Unknown action: ' + action };
 
     if (action === 'getClassrooms') {
@@ -85,7 +87,7 @@ function handleRequest(e) {
       result = getDashboardData(body.classroomId || e.parameter.classroomId, sheetId);
     } else if (action === 'saveStudent') {
       result = saveStudent(body, sheetId);
-    } else if (action === 'saveStudents') { // NEW: Bulk Save
+    } else if (action === 'saveStudents') {
       result = saveStudents(body, sheetId);
     } else if (action === 'deleteStudent') {
       result = deleteStudent(body.classroomId, body.studentId, sheetId);
@@ -94,6 +96,16 @@ function handleRequest(e) {
     } else if (action === 'setup') {
       setup(sheetId); 
       result = { status: 'success', message: 'Setup completed successfully' };
+    } 
+    // NEW: User Management Actions
+    else if (action === 'getUsers') {
+      result = getUsers(sheetId);
+    } else if (action === 'saveUser') {
+      result = saveUser(body, sheetId);
+    } else if (action === 'deleteUser') {
+      result = deleteUser(body.userId, sheetId);
+    } else if (action === 'login') {
+      result = login(body, sheetId);
     }
 
     return ContentService.createTextOutput(JSON.stringify(result))
@@ -110,16 +122,131 @@ function handleRequest(e) {
   }
 }
 
-// --- Logic ---
+// --- User Functions ---
 
-// Helper to touch classroom timestamp
+function getUsers(sheetId) {
+  const ss = getDB(sheetId);
+  const sheet = ss.getSheetByName(SHEETS.USERS);
+  if (!sheet) return { status: 'success', data: [] };
+
+  const data = sheet.getDataRange().getValues();
+  const users = [];
+  
+  // Skip header
+  for (let i = 1; i < data.length; i++) {
+    const id = String(data[i][0]).trim();
+    if (id) {
+      users.push({
+        id: id,
+        username: data[i][1],
+        password: data[i][2], // In a real app, do not return password! But for this simple app we do.
+        name: data[i][3],
+        role: data[i][4]
+      });
+    }
+  }
+  return { status: 'success', data: users };
+}
+
+function saveUser(payload, sheetId) {
+  const ss = getDB(sheetId);
+  let sheet = ss.getSheetByName(SHEETS.USERS);
+  
+  if (!sheet) {
+    setup(sheetId);
+    sheet = ss.getSheetByName(SHEETS.USERS);
+  }
+
+  const data = sheet.getDataRange().getValues();
+  const user = payload.user;
+  const id = String(user.id).trim();
+  const now = new Date().toISOString();
+
+  let found = false;
+  // Update
+  for (let i = 1; i < data.length; i++) {
+    if (String(data[i][0]).trim() == id) {
+      sheet.getRange(i + 1, 2).setValue(user.username);
+      sheet.getRange(i + 1, 3).setValue(user.password);
+      sheet.getRange(i + 1, 4).setValue(user.name);
+      sheet.getRange(i + 1, 5).setValue(user.role);
+      sheet.getRange(i + 1, 6).setValue(now);
+      found = true;
+      break;
+    }
+  }
+
+  // Insert
+  if (!found) {
+    sheet.appendRow([id, user.username, user.password, user.name, user.role, now]);
+  }
+  
+  return { status: 'success' };
+}
+
+function deleteUser(userId, sheetId) {
+  const ss = getDB(sheetId);
+  const sheet = ss.getSheetByName(SHEETS.USERS);
+  if (!sheet) return { status: 'error', message: 'Users DB not found' };
+  
+  const targetId = String(userId).trim();
+  const data = sheet.getDataRange().getValues();
+  
+  // Prevent deleting Default Admin-001 via API (double check)
+  if (targetId === 'admin-001') {
+      return { status: 'error', message: 'Cannot delete default Super Admin' };
+  }
+
+  for (let i = data.length - 1; i >= 1; i--) {
+    if (String(data[i][0]).trim() === targetId) {
+      sheet.deleteRow(i + 1);
+      return { status: 'success' };
+    }
+  }
+  return { status: 'success', message: 'User not found' };
+}
+
+function login(payload, sheetId) {
+  const ss = getDB(sheetId);
+  const sheet = ss.getSheetByName(SHEETS.USERS);
+  
+  // If sheet missing, try setup or fail
+  if (!sheet) {
+      // If no sheet, implies no users. But maybe setup wasn't run.
+      // Setup default admin if needed logic could be here, but let's assume setup was run.
+      return { status: 'error', message: 'System not initialized. Please setup database.' };
+  }
+
+  const username = String(payload.username).trim();
+  const password = String(payload.password).trim();
+  const data = sheet.getDataRange().getValues();
+
+  for (let i = 1; i < data.length; i++) {
+    // Check case-sensitive or insensitive? Let's do Case Sensitive for password, Insensitive for username
+    if (String(data[i][1]).toLowerCase() === username.toLowerCase() && String(data[i][2]) === password) {
+      const user = {
+        id: data[i][0],
+        username: data[i][1],
+        // Do not return password in login response
+        name: data[i][3],
+        role: data[i][4]
+      };
+      return { status: 'success', user: user };
+    }
+  }
+
+  return { status: 'error', message: 'Invalid username or password' };
+}
+
+// --- Classroom Functions ---
+// (Existing logic below remains same, simplified helper updateClassroomTimestamp used)
+
 function updateClassroomTimestamp(classroomId, ss) {
   const sheet = ss.getSheetByName(SHEETS.CLASSROOMS);
   if (!sheet) return;
   const data = sheet.getDataRange().getValues();
   const id = String(classroomId).trim();
   const now = new Date().toISOString();
-  
   for (let i = 1; i < data.length; i++) {
     if (String(data[i][0]).trim() == id) {
       sheet.getRange(i + 1, 3).setValue(now);
@@ -131,58 +258,40 @@ function updateClassroomTimestamp(classroomId, ss) {
 function getClassrooms(sheetId) {
   const ss = getDB(sheetId);
   const sheet = ss.getSheetByName(SHEETS.CLASSROOMS);
-  if (!sheet) return { status: 'success', data: [] }; // Return empty array if sheet missing, handled by setup
-
+  if (!sheet) return { status: 'success', data: [] };
   const data = sheet.getDataRange().getValues();
   const classrooms = [];
-  
-  // Pre-fetch settings to count plans
   const setSheet = ss.getSheetByName(SHEETS.SETTINGS);
   const planCounts = {};
-
   if (setSheet) {
     const setData = setSheet.getDataRange().getValues();
-    // Start from 1 to skip header
     for (let i = 1; i < setData.length; i++) {
-       const cId = String(setData[i][0]).trim(); // Force string comparison
-       const type = setData[i][1];
-       if (type === 'PLANS') {
+       const cId = String(setData[i][0]).trim();
+       if (setData[i][1] === 'PLANS') {
          try {
            const plans = JSON.parse(setData[i][2]);
-           // Store count
            planCounts[cId] = Array.isArray(plans) ? plans.length : 0;
-         } catch(e) {
-           // ignore bad json
-         }
+         } catch(e) {}
        }
     }
   }
-  
-  // Skip header
   for (let i = 1; i < data.length; i++) {
     const json = data[i][1];
-    const updatedAt = data[i][2]; // Get updatedAt directly from column
+    const updatedAt = data[i][2];
     const deletedAt = data[i][3];
     if (json) {
        try {
          const obj = JSON.parse(json);
          if (deletedAt) obj.deletedAt = deletedAt;
-         if (updatedAt) obj.updatedAt = updatedAt; // Inject timestamp
-         
-         // Inject the actual plan count from settings DB
+         if (updatedAt) obj.updatedAt = updatedAt;
          const objId = String(obj.id).trim();
-         
          if (planCounts.hasOwnProperty(objId)) {
              obj.planCount = planCounts[objId];
          } else {
-             // If no setting found, fallback to existing property or 0
              obj.planCount = (obj.planCount !== undefined) ? obj.planCount : 0;
          }
-
          classrooms.push(obj);
-       } catch (e) {
-         // Skip corrupted rows
-       }
+       } catch (e) {}
     }
   }
   return { status: 'success', data: classrooms };
@@ -191,44 +300,26 @@ function getClassrooms(sheetId) {
 function saveClassroom(payload, sheetId) {
   const ss = getDB(sheetId);
   let sheet = ss.getSheetByName(SHEETS.CLASSROOMS);
-  
-  // Auto-setup if missing
-  if (!sheet) {
-    setup(sheetId);
-    sheet = ss.getSheetByName(SHEETS.CLASSROOMS);
-    if (!sheet) return { status: 'error', message: 'Failed to create DB_Classrooms sheet.' };
-  }
-  
+  if (!sheet) { setup(sheetId); sheet = ss.getSheetByName(SHEETS.CLASSROOMS); }
   const data = sheet.getDataRange().getValues();
   const id = String(payload.id).trim();
-  
-  // Clean payload before saving to avoid redundancy if passing full objects
   const safePayload = { ...payload };
   delete safePayload.action;
   delete safePayload.sheetId;
-
   const json = JSON.stringify(safePayload);
   const now = new Date().toISOString();
-
   let found = false;
   for (let i = 1; i < data.length; i++) {
     if (String(data[i][0]).trim() == id) {
-      sheet.getRange(i + 1, 2).setValue(json); // Update Data
-      sheet.getRange(i + 1, 3).setValue(now);  // Update Time
-      // Ensure deleted_at is cleared if restoring or editing
-      if (payload.deletedAt === undefined) {
-         sheet.getRange(i + 1, 4).setValue('');
-      } else {
-         sheet.getRange(i + 1, 4).setValue(payload.deletedAt);
-      }
+      sheet.getRange(i + 1, 2).setValue(json);
+      sheet.getRange(i + 1, 3).setValue(now);
+      if (payload.deletedAt === undefined) sheet.getRange(i + 1, 4).setValue('');
+      else sheet.getRange(i + 1, 4).setValue(payload.deletedAt);
       found = true;
       break;
     }
   }
-
-  if (!found) {
-    sheet.appendRow([id, json, now, payload.deletedAt || '']);
-  }
+  if (!found) sheet.appendRow([id, json, now, payload.deletedAt || '']);
   return { status: 'success' };
 }
 
@@ -236,77 +327,50 @@ function deleteClassroom(id, sheetId) {
   const ss = getDB(sheetId);
   const sheet = ss.getSheetByName(SHEETS.CLASSROOMS);
   if (!sheet) return { status: 'error', message: 'Sheet DB_Classrooms not found' };
-
-  // Ensure ID is string and trimmed for robust comparison
   const targetId = String(id).trim();
-
-  // 1. Delete Classroom Row
   const data = sheet.getDataRange().getValues();
   let deleted = false;
-  
-  // Iterate backwards to safely delete
   for (let i = data.length - 1; i >= 1; i--) {
-    // Column 0 is ID
     if (String(data[i][0]).trim() === targetId) {
       sheet.deleteRow(i + 1);
       deleted = true;
       break; 
     }
   }
-  
-  if (!deleted) return { status: 'error', message: 'Classroom ID not found: ' + targetId };
-
-  // 2. Delete related Students
+  if (!deleted) return { status: 'error', message: 'Classroom ID not found' };
   const stuSheet = ss.getSheetByName(SHEETS.STUDENTS);
   if (stuSheet) {
     const stuData = stuSheet.getDataRange().getValues();
-    // Delete backwards
     for (let i = stuData.length - 1; i >= 1; i--) {
-      if (String(stuData[i][0]).trim() === targetId) {
-        stuSheet.deleteRow(i + 1);
-      }
+      if (String(stuData[i][0]).trim() === targetId) stuSheet.deleteRow(i + 1);
     }
   }
-
-  // 3. Delete related Settings
   const setSheet = ss.getSheetByName(SHEETS.SETTINGS);
   if (setSheet) {
     const setData = setSheet.getDataRange().getValues();
     for (let i = setData.length - 1; i >= 1; i--) {
-      if (String(setData[i][0]).trim() === targetId) {
-        setSheet.deleteRow(i + 1);
-      }
+      if (String(setData[i][0]).trim() === targetId) setSheet.deleteRow(i + 1);
     }
   }
-
   return { status: 'success' };
 }
 
 function getDashboardData(classroomId, sheetId) {
   const ss = getDB(sheetId);
   const cid = String(classroomId).trim();
-  
-  // 1. Get Students
   const stuSheet = ss.getSheetByName(SHEETS.STUDENTS);
   let students = [];
   if (stuSheet) {
     const stuData = stuSheet.getDataRange().getValues();
     for (let i = 1; i < stuData.length; i++) {
       if (String(stuData[i][0]).trim() == cid) {
-        try {
-          students.push(JSON.parse(stuData[i][2]));
-        } catch (e) {
-           // Skip corrupted
-        }
+        try { students.push(JSON.parse(stuData[i][2])); } catch (e) {}
       }
     }
   }
-
-  // 2. Get Settings (Plans & Subjects)
   const setSheet = ss.getSheetByName(SHEETS.SETTINGS);
   let plans = null;
   let subjects = null;
-
   if (setSheet) {
     const setData = setSheet.getDataRange().getValues();
     for (let i = 1; i < setData.length; i++) {
@@ -314,34 +378,23 @@ function getDashboardData(classroomId, sheetId) {
          try {
            if (setData[i][1] === 'PLANS') plans = JSON.parse(setData[i][2]);
            if (setData[i][1] === 'SUBJECTS') subjects = JSON.parse(setData[i][2]);
-         } catch (e) {
-           // Skip corrupted
-         }
+         } catch (e) {}
       }
     }
   }
-
   return { status: 'success', students, plans, subjects };
 }
 
 function saveStudent(payload, sheetId) {
   const ss = getDB(sheetId);
   let sheet = ss.getSheetByName(SHEETS.STUDENTS);
-  
-  // Auto-setup if missing
-  if (!sheet) {
-    setup(sheetId);
-    sheet = ss.getSheetByName(SHEETS.STUDENTS);
-    if (!sheet) return { status: 'error', message: 'Failed to create DB_Students sheet.' };
-  }
-
+  if (!sheet) { setup(sheetId); sheet = ss.getSheetByName(SHEETS.STUDENTS); }
   const data = sheet.getDataRange().getValues();
   const classroomId = String(payload.classroomId).trim();
-  const student = payload.student; // The student object
+  const student = payload.student;
   const studentId = String(student.id).trim();
   const json = JSON.stringify(student);
   const now = new Date().toISOString();
-
   let found = false;
   for (let i = 1; i < data.length; i++) {
     if (String(data[i][0]).trim() == classroomId && String(data[i][1]).trim() == studentId) {
@@ -351,106 +404,68 @@ function saveStudent(payload, sheetId) {
       break;
     }
   }
-
-  if (!found) {
-    sheet.appendRow([classroomId, studentId, json, now]);
-  }
-  
-  // TOUCH CLASSROOM
+  if (!found) sheet.appendRow([classroomId, studentId, json, now]);
   updateClassroomTimestamp(classroomId, ss);
-  
   return { status: 'success' };
 }
 
 function saveStudents(payload, sheetId) {
   const ss = getDB(sheetId);
   let sheet = ss.getSheetByName(SHEETS.STUDENTS);
-  
-  // Auto-setup if missing
-  if (!sheet) {
-    setup(sheetId);
-    sheet = ss.getSheetByName(SHEETS.STUDENTS);
-  }
-
+  if (!sheet) { setup(sheetId); sheet = ss.getSheetByName(SHEETS.STUDENTS); }
   const classroomId = String(payload.classroomId).trim();
-  const students = payload.students; // Array of students
+  const students = payload.students;
   const now = new Date().toISOString();
-  
-  // Optimizing for speed: Read all data, map existing indices
   const data = sheet.getDataRange().getValues();
-  const indexMap = new Map(); // Key: studentId, Value: Row Index (0-based relative to data array)
-  
+  const indexMap = new Map();
   for (let i = 1; i < data.length; i++) {
     if (String(data[i][0]).trim() == classroomId) {
       indexMap.set(String(data[i][1]).trim(), i);
     }
   }
-
   const newRows = [];
-  
   students.forEach(student => {
      const studentId = String(student.id).trim();
      const json = JSON.stringify(student);
-     
      if (indexMap.has(studentId)) {
-        // Update existing row
         const rowIndex = indexMap.get(studentId);
         sheet.getRange(rowIndex + 1, 3).setValue(json);
         sheet.getRange(rowIndex + 1, 4).setValue(now);
      } else {
-        // Prepare for append
         newRows.push([classroomId, studentId, json, now]);
      }
   });
-
-  if (newRows.length > 0) {
-     // Batch append
-     sheet.getRange(sheet.getLastRow() + 1, 1, newRows.length, 4).setValues(newRows);
-  }
-  
-  // TOUCH CLASSROOM
+  if (newRows.length > 0) sheet.getRange(sheet.getLastRow() + 1, 1, newRows.length, 4).setValues(newRows);
   updateClassroomTimestamp(classroomId, ss);
-
   return { status: 'success', count: students.length };
 }
 
 function deleteStudent(classroomId, studentId, sheetId) {
    const ss = getDB(sheetId);
    const sheet = ss.getSheetByName(SHEETS.STUDENTS);
-   if (!sheet) return { status: 'success', message: 'Sheet not found, nothing to delete.' };
-
+   if (!sheet) return { status: 'success' };
    const data = sheet.getDataRange().getValues();
    const cid = String(classroomId).trim();
    const sid = String(studentId).trim();
-   
    for (let i = 1; i < data.length; i++) {
     if (String(data[i][0]).trim() == cid && String(data[i][1]).trim() == sid) {
       sheet.deleteRow(i + 1);
-      // TOUCH CLASSROOM
       updateClassroomTimestamp(classroomId, ss);
       return { status: 'success' };
     }
   }
-  return { status: 'success', message: 'Not found' };
+  return { status: 'success' };
 }
 
 function saveSettings(payload, sheetId) {
   const ss = getDB(sheetId);
   let sheet = ss.getSheetByName(SHEETS.SETTINGS);
-
-  // Auto-setup if missing
-  if (!sheet) {
-    setup(sheetId);
-    sheet = ss.getSheetByName(SHEETS.SETTINGS);
-    if (!sheet) return { status: 'error', message: 'Failed to create DB_Settings sheet.' };
-  }
-
+  if (!sheet) { setup(sheetId); sheet = ss.getSheetByName(SHEETS.SETTINGS); }
   const data = sheet.getDataRange().getValues();
   const classroomId = String(payload.classroomId).trim();
-  const type = payload.type; // 'PLANS' or 'SUBJECTS'
+  const type = payload.type;
   const json = JSON.stringify(payload.data);
   const now = new Date().toISOString();
-
   let found = false;
   for (let i = 1; i < data.length; i++) {
     if (String(data[i][0]).trim() == classroomId && data[i][1] == type) {
@@ -460,13 +475,7 @@ function saveSettings(payload, sheetId) {
       break;
     }
   }
-
-  if (!found) {
-    sheet.appendRow([classroomId, type, json, now]);
-  }
-  
-  // TOUCH CLASSROOM
+  if (!found) sheet.appendRow([classroomId, type, json, now]);
   updateClassroomTimestamp(classroomId, ss);
-
   return { status: 'success' };
 }

@@ -1,5 +1,5 @@
 
-import { Classroom, Student, StudyPlan, ExamSubject } from '../types';
+import { Classroom, Student, StudyPlan, ExamSubject, AdminUser } from '../types';
 import { storage } from './storage';
 
 const getApiUrl = () => {
@@ -8,24 +8,22 @@ const getApiUrl = () => {
 };
 
 // Unified POST Request Handler
-// Using POST for all requests to Google Apps Script avoids CORS issues with GET redirects
 const sendPostRequest = async (action: string, data: any = {}) => {
     const config = storage.getConfig();
     const API_URL = config.scriptUrl ? config.scriptUrl.trim() : '';
     
+    // Improved Validation: Just check if empty or is a placeholder text
     if (!API_URL || API_URL.includes('วาง_URL') || API_URL === '') {
         throw new Error('ไม่พบ Web App URL กรุณาตั้งค่าในเมนู System Admin');
     }
 
-    // Safely append action query parameter
     const separator = API_URL.includes('?') ? '&' : '?';
     const url = `${API_URL}${separator}action=${action}`;
 
-    // Include sheetId in the payload to ensure we target the correct database
     const payload = {
         ...data,
         action,
-        sheetId: config.sheetId ? config.sheetId.trim() : '' // Send the configured Sheet ID
+        sheetId: config.sheetId ? config.sheetId.trim() : ''
     };
 
     try {
@@ -70,7 +68,6 @@ const api = {
     await sendPostRequest('saveClassroom', classroom);
   },
 
-  // NEW: Permanent Delete Classroom
   async deleteClassroom(id: string): Promise<void> {
     await sendPostRequest('deleteClassroom', { id });
   },
@@ -97,7 +94,6 @@ const api = {
     });
   },
 
-  // NEW: Bulk Save
   async saveStudents(classroomId: string, students: Student[]): Promise<void> {
     await sendPostRequest('saveStudents', {
         classroomId,
@@ -122,6 +118,34 @@ const api = {
 
   async setupDatabase(): Promise<void> {
     await sendPostRequest('setup');
+  },
+
+  // --- User Management APIs ---
+  
+  async getUsers(): Promise<AdminUser[]> {
+    try {
+      const result = await sendPostRequest('getUsers');
+      return Array.isArray(result?.data) ? result.data : [];
+    } catch (error) {
+      console.warn('Error fetching users:', error);
+      throw error;
+    }
+  },
+
+  async saveUser(user: AdminUser): Promise<void> {
+    await sendPostRequest('saveUser', { user });
+  },
+
+  async deleteUser(userId: string): Promise<void> {
+    await sendPostRequest('deleteUser', { userId });
+  },
+
+  async login(username: string, password: string): Promise<AdminUser> {
+    const result = await sendPostRequest('login', { username, password });
+    if (!result.user) {
+        throw new Error('Invalid response from server');
+    }
+    return result.user;
   }
 };
 

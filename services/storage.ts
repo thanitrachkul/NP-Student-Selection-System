@@ -2,36 +2,23 @@
 import { AdminUser, SystemConfig, ActivityLog } from '../types';
 
 const STORAGE_KEYS = {
-  USERS: 'APP_ADMIN_USERS',
+  // USERS Key Removed - Managed by API now
   CONFIG: 'APP_SYSTEM_CONFIG',
   LOGS: 'APP_ACTIVITY_LOGS',
-  SESSION: 'APP_ACTIVE_SESSION' // New key
+  SESSION: 'APP_ACTIVE_SESSION' 
 };
 
-const DEFAULT_ADMIN: AdminUser = {
+// Default admin for bootstrap/fallback ONLY
+export const FALLBACK_ADMIN: AdminUser = {
   id: 'admin-001',
   username: 'Admin',
   password: '@Np123456',
-  name: 'ผู้ดูแลระบบหลัก',
+  name: 'ผู้ดูแลระบบหลัก (Offline)',
   role: 'SUPER_ADMIN'
 };
 
-// Set the default configuration values for the app.  In particular, the
-// scriptUrl field is populated with the Google Apps Script URL provided by the user.
-// This ensures the app has a working backend endpoint as soon as it starts up
-// without requiring a manual paste in the UI.  If you need to override these values
-// later via the System Admin settings, you still can.
 const DEFAULT_CONFIG: SystemConfig = {
-  // The backend endpoint for Google Apps Script calls.  This default was set
-  // via ChatGPT based on user instruction to avoid needing to paste it in the
-  // settings page manually.  See https://script.google.com for more information.
-  // Updated default backend endpoint for Google Apps Script.  This URL was
-  // provided by the user during deployment and points to the active Apps
-  // Script web app.  Having this value pre-populated means the app can
-  // communicate with the backend out of the box without requiring the user
-  // to paste the URL manually via the System Admin settings page.  If you
-  // need to change it later, simply update the configuration in System Admin.
-  scriptUrl: 'https://script.google.com/macros/s/AKfycbxVRoUYpinuItY8kKLa-jAiXmybVwM9JlefXK5jwA2YrsPlwKkznPPIPSacasOUYH1x/exec',
+  scriptUrl: 'https://script.google.com/macros/s/AKfycbwHfcWid0yqs0C2q3nnspJqsBkDdGmH59R02ULSDOIbyPNcfoe_l8ngzelriJJpKdSq/exec',
   sheetId: '1ge8sumS3qX7lsw29cIoBQrsW5vNYI5yfr_BPveAiLmc',
   driveId: '142UYdJGFhP3TtJ_fSJA2WUW3E8iHTIWW'
 };
@@ -51,56 +38,12 @@ export const storage = {
     localStorage.removeItem(STORAGE_KEYS.SESSION);
   },
 
-  // --- User Management ---
-  getUsers(): AdminUser[] {
-    const stored = localStorage.getItem(STORAGE_KEYS.USERS);
-    if (!stored) {
-      // Initialize with default admin if empty
-      this.saveUsers([DEFAULT_ADMIN]);
-      return [DEFAULT_ADMIN];
-    }
-    return JSON.parse(stored);
-  },
-
-  saveUsers(users: AdminUser[]) {
-    localStorage.setItem(STORAGE_KEYS.USERS, JSON.stringify(users));
-  },
-
-  addUser(user: AdminUser) {
-    const users = this.getUsers();
-    if (users.some(u => u.username === user.username)) {
-      throw new Error('ชื่อผู้ใช้งานนี้มีอยู่ในระบบแล้ว');
-    }
-    users.push(user);
-    this.saveUsers(users);
-  },
-
-  updateUser(updatedUser: AdminUser) {
-    const users = this.getUsers();
-    const index = users.findIndex(u => u.id === updatedUser.id);
-    if (index !== -1) {
-      users[index] = updatedUser;
-      this.saveUsers(users);
-    }
-  },
-
-  deleteUser(userId: string) {
-    let users = this.getUsers();
-    const target = users.find(u => u.id === userId);
-    
-    // Prevent deleting the main Super Admin account
-    if (target?.username === 'Admin' || target?.id === 'admin-001') { 
-        throw new Error('ไม่สามารถลบผู้ดูแลระบบหลัก (Super Admin) ได้');
-    }
-    
-    users = users.filter(u => u.id !== userId);
-    this.saveUsers(users);
-  },
-
-  validateUser(username: string, password: string): AdminUser | null {
-    const users = this.getUsers();
-    const user = users.find(u => u.username === username && u.password === password);
-    return user || null;
+  // --- Local User Helper (Bootstrap) ---
+  validateLocalFallback(username: string, password: string): AdminUser | null {
+     if (username === FALLBACK_ADMIN.username && password === FALLBACK_ADMIN.password) {
+         return FALLBACK_ADMIN;
+     }
+     return null;
   },
 
   // --- System Configuration ---
@@ -109,7 +52,14 @@ export const storage = {
     if (!stored) {
         return DEFAULT_CONFIG;
     }
-    return JSON.parse(stored);
+    const parsed = JSON.parse(stored);
+    
+    // Merge with defaults: if stored scriptUrl is empty/missing, use the hardcoded default
+    return {
+        ...DEFAULT_CONFIG,
+        ...parsed,
+        scriptUrl: parsed.scriptUrl ? parsed.scriptUrl : DEFAULT_CONFIG.scriptUrl
+    };
   },
 
   saveConfig(config: SystemConfig) {

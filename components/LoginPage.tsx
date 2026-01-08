@@ -1,9 +1,10 @@
 
 import React, { useState } from 'react';
 import Button from './Button';
-import { Lock, X, AlertCircle, User } from 'lucide-react';
+import { Lock, X, AlertCircle, User, Loader2 } from 'lucide-react';
 import { storage } from '../services/storage';
 import { AdminUser } from '../types';
+import api from '../services/api';
 
 interface LoginPageProps {
   onLogin: (user: AdminUser) => void;
@@ -15,31 +16,49 @@ const LoginPage: React.FC<LoginPageProps> = ({ onLogin, onBack, variant = 'ADMIN
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+    setLoading(true);
 
-    const user = storage.validateUser(username, password);
-    
-    if (user) {
-        if (variant === 'ADMIN') {
-            // System Admin Portal: Allow SUPER_ADMIN and ADMIN
-            if (user.role === 'SUPER_ADMIN' || user.role === 'ADMIN') {
-                storage.saveSession(user); // Persist login
-                onLogin(user);
+    try {
+        let user: AdminUser | null = null;
+        let authMethod = 'API';
+
+        // 1. Try API Login first
+        try {
+            user = await api.login(username, password);
+        } catch (apiError) {
+            console.warn("API Login failed, trying local fallback", apiError);
+            // 2. Fallback to Local Default Admin (Bootstrap mechanism if API fails or not set up)
+            user = storage.validateLocalFallback(username, password);
+            authMethod = 'LOCAL_FALLBACK';
+        }
+
+        if (user) {
+            if (variant === 'ADMIN') {
+                // System Admin Portal: Allow SUPER_ADMIN and ADMIN
+                if (user.role === 'SUPER_ADMIN' || user.role === 'ADMIN') {
+                    storage.saveSession(user); 
+                    onLogin(user);
+                } else {
+                    setError('สิทธิ์ไม่เพียงพอ: เฉพาะ Admin หรือ Super Admin เท่านั้น');
+                }
             } else {
-                setError('สิทธิ์ไม่เพียงพอ: เฉพาะ Admin หรือ Super Admin เท่านั้น');
+                // Staff Portal
+                storage.saveSession(user); 
+                onLogin(user); 
             }
         } else {
-            // Staff Portal: Can be ADMIN, STAFF, or VIEWER
-            // Note: Super Admin can technically login here too if they want to see the staff view
-            storage.saveSession(user); // Persist login
-            onLogin(user); 
+            setError('ชื่อผู้ใช้งานหรือรหัสผ่านไม่ถูกต้อง');
+            setPassword('');
         }
-    } else {
-        setError('ชื่อผู้ใช้งานหรือรหัสผ่านไม่ถูกต้อง');
-        setPassword('');
+    } catch (err) {
+        setError('เกิดข้อผิดพลาดในการเชื่อมต่อระบบ');
+    } finally {
+        setLoading(false);
     }
   };
 
@@ -117,8 +136,8 @@ const LoginPage: React.FC<LoginPageProps> = ({ onLogin, onBack, variant = 'ADMIN
           </div>
 
           <div className="pt-4">
-            <Button type="submit" variant="primary" className="w-full py-3.5 text-base font-bold rounded-full shadow-lg shadow-black/10 hover:shadow-xl hover:shadow-black/20 transform active:scale-[0.98] transition-all">
-              เข้าสู่ระบบ
+            <Button type="submit" variant="primary" disabled={loading} className="w-full py-3.5 text-base font-bold rounded-full shadow-lg shadow-black/10 hover:shadow-xl hover:shadow-black/20 transform active:scale-[0.98] transition-all flex justify-center items-center">
+              {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : 'เข้าสู่ระบบ'}
             </Button>
           </div>
           
